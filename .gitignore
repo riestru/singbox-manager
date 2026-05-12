@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Локальные настройки (никогда не коммитить!)
+singbox-manager/.env
+singbox-manager/users.db
+
+# Временные файлы
+*.tmp
+*.bak
+*.zip

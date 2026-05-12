@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sing-box Manager</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2d3150;
+    --accent: #6c63ff;
+    --accent2: #00d4aa;
+    --text: #e2e8f0;
+    --text-muted: #7a8099;
+    --green: #22c55e;
+    --yellow: #f59e0b;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --radius: 12px;
+    --font: 'Inter', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font);
+         font-size: 14px; min-height: 100vh; }
+
+  /* Layout */
+  .shell { max-width: 1400px; margin: 0 auto; padding: 24px 16px; }
+  header { display: flex; align-items: center; justify-content: space-between;
+           margin-bottom: 28px; flex-wrap: wrap; gap: 12px; }
+  header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+  header h1 span { color: var(--accent); }
+  .ts { font-size: 12px; color: var(--text-muted); }
+
+  /* Cards row */
+  .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+               gap: 14px; margin-bottom: 28px; }
+  .card { background: var(--surface); border: 1px solid var(--border);
+          border-radius: var(--radius); padding: 18px; }
+  .card-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase;
+                letter-spacing: 0.5px; margin-bottom: 8px; }
+  .card-value { font-size: 24px; font-weight: 700; }
+  .card-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+         margin-right: 6px; }
+  .dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot-red { background: var(--red); }
+  .dot-yellow { background: var(--yellow); }
+
+  /* Search */
+  .toolbar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .search-box { background: var(--surface); border: 1px solid var(--border);
+                border-radius: 8px; padding: 8px 14px; color: var(--text);
+                font-size: 14px; width: 260px; outline: none; }
+  .search-box:focus { border-color: var(--accent); }
+  .filter-btn { background: var(--surface); border: 1px solid var(--border);
+                border-radius: 8px; padding: 8px 14px; color: var(--text-muted);
+                cursor: pointer; font-size: 13px; transition: all .15s; }
+  .filter-btn:hover, .filter-btn.active { border-color: var(--accent);
+                                           color: var(--text); background: var(--surface2); }
+
+  /* Table */
+  .table-wrap { overflow-x: auto; border-radius: var(--radius);
+                border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; }
+  thead th { background: var(--surface2); padding: 12px 16px; text-align: left;
+             font-size: 11px; font-weight: 600; color: var(--text-muted);
+             text-transform: uppercase; letter-spacing: 0.5px;
+             border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--surface2); }
+  td { padding: 13px 16px; vertical-align: middle; }
+
+  /* Badges */
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px;
+           border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .badge-active { background: rgba(34,197,94,.15); color: var(--green); }
+  .badge-suspended { background: rgba(245,158,11,.15); color: var(--yellow); }
+  .badge-deleted { background: rgba(239,68,68,.15); color: var(--red); }
+  .badge-expired { background: rgba(239,68,68,.12); color: var(--red); }
+
+  /* Progress bar */
+  .prog-wrap { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+  .prog-bar { flex: 1; height: 5px; background: var(--border); border-radius: 3px;
+              overflow: hidden; }
+  .prog-fill { height: 100%; border-radius: 3px; transition: width .3s; }
+  .prog-fill.ok { background: var(--accent2); }
+  .prog-fill.warn { background: var(--yellow); }
+  .prog-fill.over { background: var(--red); }
+  .prog-pct { font-size: 11px; color: var(--text-muted); min-width: 36px;
+              text-align: right; }
+
+  /* Actions */
+  .actions { display: flex; gap: 6px; }
+  .btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px;
+         border-radius: 7px; font-size: 12px; font-weight: 500; cursor: pointer;
+         border: 1px solid transparent; transition: all .15s; text-decoration: none; }
+  .btn-ghost { background: transparent; border-color: var(--border); color: var(--text-muted); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--text); background: var(--surface2); }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { opacity: .85; }
+
+  /* Modal / drawer */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+                   z-index: 100; align-items: center; justify-content: center; padding: 16px; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--border);
+           border-radius: 16px; max-width: 520px; width: 100%;
+           max-height: 90vh; overflow-y: auto; padding: 28px; position: relative; }
+  .modal-close { position: absolute; top: 16px; right: 16px; background: none; border: none;
+                 color: var(--text-muted); font-size: 20px; cursor: pointer; line-height: 1; }
+  .modal-close:hover { color: var(--text); }
+  .modal h2 { font-size: 18px; margin-bottom: 20px; }
+
+  /* User detail inside modal */
+  .detail-row { display: flex; justify-content: space-between; padding: 8px 0;
+                border-bottom: 1px solid var(--border); font-size: 13px; }
+  .detail-row:last-child { border-bottom: none; }
+  .detail-label { color: var(--text-muted); }
+  .detail-value { font-weight: 500; text-align: right; max-width: 60%; word-break: break-all; }
+
+  .qr-section { display: flex; gap: 16px; margin-top: 20px; flex-wrap: wrap; }
+  .qr-box { background: white; border-radius: 10px; padding: 8px;
+            display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .qr-box img { width: 140px; height: 140px; }
+  .qr-label { font-size: 11px; color: #333; font-weight: 600; }
+
+  .uri-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+             padding: 10px 14px; font-family: monospace; font-size: 11px;
+             word-break: break-all; color: var(--text-muted); margin-top: 14px; }
+  .copy-btn { background: var(--surface2); border: 1px solid var(--border);
+              border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer;
+              color: var(--text-muted); margin-top: 6px; transition: all .15s; }
+  .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  .link-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .link-row a { color: var(--accent); font-size: 12px; word-break: break-all; }
+
+  /* Responsive */
+  @media (max-width: 640px) {
+    .stats-row { grid-template-columns: 1fr 1fr; }
+    td.hide-sm { display: none; }
+    th.hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- Header -->
+  <header>
+    <h1>Sing-box <span>Manager</span></h1>
+    <div class="ts">Обновлено: {{ now }}</div>
+  </header>
+
+  <!-- Stats cards -->
+  <div class="stats-row">
+    <div class="card">
+      <div class="card-label">Сервис</div>
+      <div class="card-value">
+        {% if singbox.active %}
+          <span class="dot dot-green"></span>Online
+        {% else %}
+          <span class="dot dot-red"></span>Offline
+        {% endif %}
+      </div>
+      <div class="card-sub">PID {{ singbox.pid }}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Пользователи</div>
+      <div class="card-value">{{ users | length }}</div>
+      <div class="card-sub">
+        {{ users | selectattr('status','eq','active') | list | length }} активных
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-label">Входящий трафик</div>
+      <div class="card-value" style="color:var(--accent2)">{{ total_rx }}</div>
+      <div class="card-sub">суммарно ↓</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Исходящий трафик</div>
+      <div class="card-value" style="color:var(--accent)">{{ total_tx }}</div>
+      <div class="card-sub">суммарно ↑</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Всего трафика</div>
+      <div class="card-value">{{ total_all }}</div>
+      <div class="card-sub">↓ + ↑</div>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <input class="search-box" id="search" placeholder="🔍 Поиск пользователя…" oninput="filterTable()">
+    <button class="filter-btn active" id="f-all" onclick="setFilter('all')">Все</button>
+    <button class="filter-btn" id="f-active" onclick="setFilter('active')">Активные</button>
+    <button class="filter-btn" id="f-suspended" onclick="setFilter('suspended')">Приостановленные</button>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap">
+    <table id="users-table">
+      <thead>
+        <tr>
+          <th>Пользователь</th>
+          <th>Статус</th>
+          <th class="hide-sm">Online</th>
+          <th class="hide-sm">Email</th>
+          <th>Трафик</th>
+          <th class="hide-sm">Лимит</th>
+          <th class="hide-sm">Истекает</th>
+          <th class="hide-sm">Создан</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr data-status="{{ u.status }}" data-name="{{ u.name | lower }}">
+          <td><strong>{{ u.name }}</strong></td>
+          <td>
+            {% if u.status == 'active' and not u.expired and not u.over_limit %}
+              <span class="badge badge-active">● Активен</span>
+            {% elif u.status == 'suspended' %}
+              <span class="badge badge-suspended">⏸ Пауза</span>
+            {% elif u.expired %}
+              <span class="badge badge-expired">⌛ Истёк</span>
+            {% elif u.over_limit %}
+              <span class="badge badge-expired">📊 Лимит</span>
+            {% else %}
+              <span class="badge badge-deleted">✕ Удалён</span>
+            {% endif %}
+          </td>
+          <td class="hide-sm" style="font-size:18px;text-align:center;">{{ u.online_icon }}</td>
+          <td class="hide-sm" style="color:var(--text-muted)">{{ u.email or '—' }}</td>
+          <td>
+            <div class="prog-wrap">
+              <div class="prog-bar">
+                {% set pct = u.traffic_pct %}
+                <div class="prog-fill {% if pct >= 90 %}over{% elif pct >= 70 %}warn{% else %}ok{% endif %}"
+                     style="width:{{ pct }}%"></div>
+              </div>
+              <span class="prog-pct">{{ u.traffic_used_fmt }}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
+              ↓{{ u.traffic_rx_fmt }} ↑{{ u.traffic_tx_fmt }}
+            </div>
+          </td>
+          <td class="hide-sm" style="color:var(--text-muted)">{{ u.limit_fmt }}</td>
+          <td class="hide-sm" style="color:var(--text-muted)">{{ u.expire_fmt }}</td>
+          <td class="hide-sm" style="color:var(--text-muted)">{{ u.created_at[:10] }}</td>
+          <td>
+            <div class="actions">
+              <button class="btn btn-ghost" onclick="openModal({{ loop.index0 }})">
+                🔍 Инфо
+              </button>
+              <button class="btn btn-ghost" onclick="resetTraffic('{{ u.name }}')" title="Сбросить трафик">
+                🔄
+              </button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Modals for each user -->
+{% for u in users %}
+<div class="modal-overlay" id="modal-{{ loop.index0 }}" onclick="closeOnOverlay(event, {{ loop.index0 }})">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal({{ loop.index0 }})">✕</button>
+    <h2>👤 {{ u.name }} {{ u.online_icon }}</h2>
+
+    <div class="detail-row">
+      <span class="detail-label">Статус</span>
+      <span class="detail-value">{{ u.status }}{% if u.expired %} (истёк){% endif %}{% if u.over_limit %} (лимит){% endif %}</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">Email</span>
+      <span class="detail-value">{{ u.email or '—' }}</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">Трафик ↓/↑</span>
+      <span class="detail-value">{{ u.traffic_rx_fmt }} / {{ u.traffic_tx_fmt }}</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">Всего трафика</span>
+      <span class="detail-value">{{ u.traffic_used_fmt }} / {{ u.limit_fmt }}</span>
+    </div>
+    {% if u.traffic_limit_gb %}
+    <div class="detail-row">
+      <span class="detail-label">Использовано %</span>
+      <span class="detail-value">{{ u.traffic_pct }}%</span>
+    </div>
+    {% endif %}
+    <div class="detail-row">
+      <span class="detail-label">Истекает</span>
+      <span class="detail-value">{{ u.expire_fmt }}</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">Создан</span>
+      <span class="detail-value">{{ u.created_at[:16] }}</span>
+    </div>
+    {% if u.notes %}
+    <div class="detail-row">
+      <span class="detail-label">Заметка</span>
+      <span class="detail-value">{{ u.notes }}</span>
+    </div>
+    {% endif %}
+
+    <!-- URI -->
+    <div style="margin-top:16px;font-size:12px;color:var(--text-muted);">Hysteria2 URI:</div>
+    <div class="uri-box" id="uri-{{ loop.index0 }}">{{ u.hy2_uri }}</div>
+    <button class="copy-btn" onclick="copyText('uri-{{ loop.index0 }}')">📋 Копировать URI</button>
+
+    <!-- Links -->
+    <div class="link-row">
+      <span style="color:var(--text-muted);font-size:12px;">Подписка:</span>
+      <a href="{{ u.sub_url }}" target="_blank">{{ u.sub_url }}</a>
+      <button class="copy-btn" onclick="copyVal('{{ u.sub_url }}')">📋</button>
+    </div>
+    <div class="link-row">
+      <span style="color:var(--text-muted);font-size:12px;">Конфиг:</span>
+      <a href="{{ u.config_url }}" target="_blank">Скачать singbox JSON</a>
+    </div>
+
+    <!-- QR codes -->
+    <div class="qr-section">
+      <div class="qr-box">
+        <img src="data:image/png;base64,{{ u.qr_uri_b64 }}" alt="QR URI">
+        <div class="qr-label">URI</div>
+      </div>
+      <div class="qr-box">
+        <img src="data:image/png;base64,{{ u.qr_sub_b64 }}" alt="QR Sub">
+        <div class="qr-label">Подписка</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+<script>
+  function openModal(i) {
+    document.getElementById('modal-' + i).classList.add('open');
+  }
+  function closeModal(i) {
+    document.getElementById('modal-' + i).classList.remove('open');
+  }
+  function closeOnOverlay(e, i) {
+    if (e.target === document.getElementById('modal-' + i)) closeModal(i);
+  }
+
+  function copyText(id) {
+    const text = document.getElementById(id).textContent.trim();
+    navigator.clipboard.writeText(text).then(() => showToast('Скопировано!'));
+  }
+  function copyVal(val) {
+    navigator.clipboard.writeText(val).then(() => showToast('Скопировано!'));
+  }
+
+  function showToast(msg) {
+    const t = document.createElement('div');
+    t.textContent = msg;
+    Object.assign(t.style, {
+      position: 'fixed', bottom: '24px', right: '24px',
+      background: '#6c63ff', color: '#fff', padding: '10px 18px',
+      borderRadius: '8px', fontSize: '13px', zIndex: 9999,
+      boxShadow: '0 4px 20px rgba(0,0,0,.4)',
+    });
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 2000);
+  }
+
+  let currentFilter = 'all';
+  function setFilter(f) {
+    currentFilter = f;
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('f-' + f).classList.add('active');
+    filterTable();
+  }
+  function filterTable() {
+    const q = document.getElementById('search').value.toLowerCase();
+    document.querySelectorAll('#users-table tbody tr').forEach(row => {
+      const name = row.dataset.name || '';
+      const status = row.dataset.status || '';
+      const matchFilter = currentFilter === 'all' || status === currentFilter;
+      const matchSearch = name.includes(q);
+      row.style.display = (matchFilter && matchSearch) ? '' : 'none';
+    });
+  }
+
+  async function resetTraffic(name) {
+    if (!confirm('Сбросить трафик для ' + name + '?')) return;
+    const r = await fetch('/api/reset_traffic/' + name, {method: 'POST'});
+    if (r.ok) { showToast('Трафик ' + name + ' сброшен'); setTimeout(() => location.reload(), 1000); }
+    else showToast('Ошибка сброса');
+  }
+
+  // Auto-refresh every 60s
+  setTimeout(() => location.reload(), 60000);
+</script>
+</body>
+</html>
