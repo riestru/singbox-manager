@@ -2,11 +2,16 @@
 # =============================================================================
 # singbox-manager-install.sh
 # Полная установка sing-box + singbox-manager на Ubuntu 24.04
-# Использование: bash singbox-manager-install.sh
+#
+# Способы запуска:
+#   bash singbox-manager-install.sh
+#   curl -fsSL https://raw.githubusercontent.com/riestru/singbox-manager/main/singbox-manager-install.sh -o install.sh && bash install.sh
+#
+# ВАЖНО: не запускайте через  curl ... | bash  — интерактивный ввод не работает.
 # =============================================================================
 set -euo pipefail
 
-# ── Цвета для вывода ──────────────────────────────────────────────────────
+# ── Цвета ─────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 info()    { echo -e "${CYAN}[INFO]${NC} $*"; }
@@ -14,6 +19,14 @@ success() { echo -e "${GREEN}[OK]${NC}   $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error()   { echo -e "${RED}[ERR]${NC}  $*"; exit 1; }
 step()    { echo -e "\n${BOLD}══ $* ══${NC}"; }
+
+# Читаем ввод всегда из /dev/tty — работает и при pipe, и при прямом запуске
+tty_read() {
+    local prompt="$1" varname="$2"
+    local val
+    read -rp "$prompt" val </dev/tty
+    printf -v "$varname" '%s' "$val"
+}
 
 # ── Константы ─────────────────────────────────────────────────────────────
 APP_DIR="/opt/singbox-manager"
@@ -45,29 +58,32 @@ step "Параметры установки"
 # Домен
 echo -e "\n${BOLD}Домен${NC} (например: vpn.example.com)"
 echo "Если домена нет — нажмите Enter (будет самоподписанный сертификат)"
-read -rp "Домен: " DOMAIN
+tty_read "Домен: " DOMAIN
 DOMAIN="${DOMAIN// /}"
 
-# Email (для acme.sh, только если домен задан)
+# Email (только если домен задан)
+ACME_EMAIL=""
 if [[ -n "$DOMAIN" ]]; then
     echo -e "\n${BOLD}Email${NC} для Let's Encrypt (acme.sh):"
     while true; do
-        read -rp "Email: " ACME_EMAIL
+        tty_read "Email: " ACME_EMAIL
         [[ "$ACME_EMAIL" =~ ^[^@]+@[^@]+\.[^@]+$ ]] && break
         warn "Некорректный email, попробуйте снова"
     done
 fi
 
-# WEB_PREFIX — секретный путь к панели
+# WEB_PREFIX
 echo -e "\n${BOLD}Секретный путь к веб-панели${NC} (WEB_PREFIX)"
-echo "Генерируется автоматически. Можно изменить или оставить пустым (панель на /)."
-AUTO_PREFIX=$(openssl rand -base64 8 | tr '/+=' '_-x' | head -c 12)
+echo "Защищает панель — она будет доступна только по https://домен/PREFIX/"
+AUTO_PREFIX=$(openssl rand -base64 8 | tr -dc 'a-zA-Z0-9' | head -c 12)
 echo -e "Сгенерированный: ${CYAN}${AUTO_PREFIX}${NC}"
-read -rp "Нажмите Enter чтобы использовать его, или введите свой (пусто = без префикса): " CUSTOM_PREFIX
+echo "Нажмите Enter чтобы использовать его, введите свой, или '-' для отключения (панель на /):"
+tty_read "WEB_PREFIX: " CUSTOM_PREFIX
+
 if [[ -z "$CUSTOM_PREFIX" ]]; then
     WEB_PREFIX="$AUTO_PREFIX"
     info "Используется: ${WEB_PREFIX}"
-elif [[ "$CUSTOM_PREFIX" == " " ]]; then
+elif [[ "$CUSTOM_PREFIX" == "-" ]]; then
     WEB_PREFIX=""
     warn "Панель будет доступна на / без защиты путём"
 else
@@ -76,9 +92,9 @@ else
 fi
 
 # Генерация паролей
-OBFS_PASSWORD=$(openssl rand -base64 16 | tr '/+' '_-')
+OBFS_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9+/' | head -c 22)
 WEB_SECRET_KEY=$(openssl rand -hex 24)
-WEB_ADMIN_PASS=$(openssl rand -base64 12 | tr '/+=' '_-x')
+WEB_ADMIN_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
 echo -e "\n${BOLD}Параметры установки:${NC}"
 echo "  Домен:          ${DOMAIN:-'нет (самоподписанный сертификат)'}"
@@ -86,7 +102,7 @@ echo "  OBFS пароль:    ${OBFS_PASSWORD}"
 echo "  WEB_PREFIX:     ${WEB_PREFIX:-'(пусто — панель на /)'}"
 echo "  WEB_ADMIN_PASS: ${WEB_ADMIN_PASS}"
 echo ""
-read -rp "Продолжить? [Enter / Ctrl+C для отмены]: "
+tty_read "Продолжить? [Enter / Ctrl+C для отмены]: " _confirm
 
 # =============================================================================
 # ШАГ 2: Системные пакеты
@@ -95,7 +111,7 @@ step "Системные пакеты"
 apt-get update -qq
 apt-get install -y -qq \
     python3 python3-pip python3-venv \
-    nginx curl wget unzip socat sqlite3
+    nginx curl wget unzip socat sqlite3 openssl
 success "Пакеты установлены"
 
 # =============================================================================
@@ -115,9 +131,8 @@ tar -xzf "$SINGBOX_TGZ"
 cp "/tmp/sing-box-${SINGBOX_VERSION}-linux-amd64/sing-box" "$SINGBOX_BIN"
 chmod +x "$SINGBOX_BIN"
 rm -rf "/tmp/sing-box-${SINGBOX_VERSION}-linux-amd64" "/tmp/$SINGBOX_TGZ"
-success "sing-box ${SINGBOX_VERSION} установлен → ${SINGBOX_BIN}"
+success "sing-box ${SINGBOX_VERSION} → ${SINGBOX_BIN}"
 
-# Systemd unit для sing-box
 cat > /etc/systemd/system/sing-box.service << 'EOF'
 [Unit]
 Description=Sing-box
@@ -143,6 +158,7 @@ if [[ -n "$DOMAIN" ]]; then
     info "Получаем сертификат для ${DOMAIN} через acme.sh..."
 
     # Временный nginx для acme challenge
+    rm -f /etc/nginx/sites-enabled/default
     cat > /etc/nginx/sites-available/acme-temp << NGINXEOF
 server {
     listen 80;
@@ -151,37 +167,36 @@ server {
     location / { return 444; }
 }
 NGINXEOF
-    rm -f /etc/nginx/sites-enabled/default
     ln -sf /etc/nginx/sites-available/acme-temp /etc/nginx/sites-enabled/acme-temp
     nginx -t -q && systemctl restart nginx
 
-    # acme.sh
+    # Устанавливаем acme.sh если нет
     if [[ ! -f ~/.acme.sh/acme.sh ]]; then
         curl -fsSL https://get.acme.sh | sh -s email="$ACME_EMAIL" --no-profile
     fi
-    # shellcheck source=/dev/null
-    . ~/.acme.sh/acme.sh.env 2>/dev/null || export PATH="$HOME/.acme.sh:$PATH"
+    export PATH="$HOME/.acme.sh:$PATH"
 
-    ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot /var/www/html --quiet \
-      || error "Не удалось получить сертификат для ${DOMAIN}. Проверьте DNS и порт 80."
+    # Выпускаем сертификат (без --quiet, он не поддерживается)
+    ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot /var/www/html \
+      || error "Не удалось получить сертификат для ${DOMAIN}. Проверьте DNS (dig ${DOMAIN} +short) и порт 80."
 
     ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
         --cert-file      "${CERTS_DIR}/cert.pem" \
         --key-file       "${CERTS_DIR}/key.pem" \
         --fullchain-file "${CERTS_DIR}/fullchain.pem" \
-        --reloadcmd      "systemctl reload nginx" \
-        --quiet
+        --reloadcmd      "systemctl reload nginx"
 
     rm -f /etc/nginx/sites-enabled/acme-temp /etc/nginx/sites-available/acme-temp
     success "Сертификат получен → ${CERTS_DIR}"
     CERT_PATH="${CERTS_DIR}/fullchain.pem"
     KEY_PATH="${CERTS_DIR}/key.pem"
 else
-    warn "Домен не задан — генерируем самоподписанный сертификат"
+    warn "Домен не задан — генерируем самоподписанный сертификат (для теста)"
+    # Флаг -quiet не существует в openssl req, используем 2>/dev/null
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
         -keyout "${CERTS_DIR}/key.pem" \
         -out    "${CERTS_DIR}/fullchain.pem" \
-        -subj   "/CN=sing-box-vpn" -quiet
+        -subj   "/CN=sing-box-vpn" 2>/dev/null
     CERT_PATH="${CERTS_DIR}/fullchain.pem"
     KEY_PATH="${CERTS_DIR}/key.pem"
     success "Самоподписанный сертификат создан"
@@ -240,7 +255,7 @@ cat > "$SINGBOX_CONFIG" << CFGEOF
   }
 }
 CFGEOF
-success "config.json создан"
+success "config.json создан (OBFS: ${OBFS_PASSWORD})"
 
 # =============================================================================
 # ШАГ 6: Установка singbox-manager
@@ -255,11 +270,11 @@ fi
 
 # Скачиваем и распаковываем
 info "Скачиваем singbox-manager..."
-cd /opt
 curl -fsSL -o /tmp/singbox-manager.zip "$MANAGER_ZIP_URL"
 unzip -qo /tmp/singbox-manager.zip -d /opt
 rm -f /tmp/singbox-manager.zip
 mkdir -p "${APP_DIR}/templates"
+success "Файлы распакованы → ${APP_DIR}"
 
 # Python venv
 info "Устанавливаем Python зависимости..."
@@ -270,13 +285,8 @@ success "Python venv готов"
 
 # .env
 ENV_FILE="${APP_DIR}/.env"
-if [[ -f "${APP_DIR}/.env.example" ]]; then
-    cp "${APP_DIR}/.env.example" "$ENV_FILE"
-else
-    touch "$ENV_FILE"
-fi
+[[ -f "${APP_DIR}/.env.example" ]] && cp "${APP_DIR}/.env.example" "$ENV_FILE" || touch "$ENV_FILE"
 
-# Заполняем известные значения автоматически
 _set_env() {
     local key="$1" val="$2"
     if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
@@ -286,36 +296,32 @@ _set_env() {
     fi
 }
 
-_set_env "OBFS_PASSWORD"    "$OBFS_PASSWORD"
-_set_env "WEB_PREFIX"       "$WEB_PREFIX"
-_set_env "WEB_SECRET_KEY"   "$WEB_SECRET_KEY"
-_set_env "WEB_ADMIN_PASS"   "$WEB_ADMIN_PASS"
+_set_env "OBFS_PASSWORD"  "$OBFS_PASSWORD"
+_set_env "WEB_PREFIX"     "$WEB_PREFIX"
+_set_env "WEB_SECRET_KEY" "$WEB_SECRET_KEY"
+_set_env "WEB_ADMIN_PASS" "$WEB_ADMIN_PASS"
 if [[ -n "$DOMAIN" ]]; then
     _set_env "SERVER_HOST"  "$DOMAIN"
     _set_env "WEB_BASE_URL" "https://${DOMAIN}"
 fi
 
 chmod 600 "$ENV_FILE"
-chown "$SERVICE_USER:$SERVICE_USER" "$ENV_FILE"
 
-# Права для singboxmgr на sing-box конфиг
+# Права для singboxmgr
 chown "${SERVICE_USER}:${SERVICE_USER}" /etc/sing-box/ /etc/sing-box/config.json
 chmod 750 /etc/sing-box/
 chmod 640 /etc/sing-box/config.json
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "$APP_DIR"
 chmod 755 "$APP_DIR"
 
-# sudoers для управления sing-box без пароля
+# sudoers
 cat > /etc/sudoers.d/singboxmgr << SUDOEOF
-${SERVICE_USER} ALL=(ALL) NOPASSWD: \\
-  /usr/bin/systemctl restart sing-box, \\
-  /usr/bin/systemctl is-active sing-box, \\
-  /usr/bin/systemctl show sing-box
+${SERVICE_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart sing-box, /usr/bin/systemctl is-active sing-box, /usr/bin/systemctl show sing-box
 SUDOEOF
 chmod 440 /etc/sudoers.d/singboxmgr
 success "Права настроены"
 
-# Systemd для бота и веб-панели
+# Systemd сервисы
 cat > /etc/systemd/system/singbox-bot.service << SVCEOF
 [Unit]
 Description=Sing-box Telegram Bot
@@ -358,7 +364,7 @@ SVCEOF
 
 # Инициализация БД
 sudo -u "$SERVICE_USER" "${APP_DIR}/venv/bin/python" \
-    -c "import db; db.init_db(); print('DB OK')"
+    -c "import sys; sys.path.insert(0,'${APP_DIR}'); import db; db.init_db(); print('DB OK')"
 
 systemctl daemon-reload
 systemctl enable singbox-bot singbox-web sing-box
@@ -370,10 +376,9 @@ success "Systemd сервисы созданы и включены"
 step "Настройка nginx"
 rm -f /etc/nginx/sites-enabled/default
 
-if [[ -n "$DOMAIN" ]]; then
-    # HTTPS с доменом
-    if [[ -n "$WEB_PREFIX" ]]; then
-        PANEL_LOCATION="
+# Формируем блок location для панели
+if [[ -n "$WEB_PREFIX" ]]; then
+    PANEL_LOCATION="
     location /${WEB_PREFIX}/ {
         proxy_pass         http://127.0.0.1:5000/${WEB_PREFIX}/;
         proxy_set_header   Host \$host;
@@ -382,8 +387,8 @@ if [[ -n "$DOMAIN" ]]; then
         proxy_set_header   X-Forwarded-Proto \$scheme;
     }
     location / { return 404; }"
-    else
-        PANEL_LOCATION="
+else
+    PANEL_LOCATION="
     location / {
         proxy_pass         http://127.0.0.1:5000/;
         proxy_set_header   Host \$host;
@@ -391,8 +396,9 @@ if [[ -n "$DOMAIN" ]]; then
         proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto \$scheme;
     }"
-    fi
+fi
 
+if [[ -n "$DOMAIN" ]]; then
     cat > /etc/nginx/sites-available/singbox-manager << NGINXEOF
 server {
     listen 80;
@@ -423,28 +429,7 @@ server {
 ${PANEL_LOCATION}
 }
 NGINXEOF
-    ln -sf /etc/nginx/sites-available/singbox-manager \
-           /etc/nginx/sites-enabled/singbox-manager
-
 else
-    # HTTP без домена (самоподписанный, только для теста)
-    if [[ -n "$WEB_PREFIX" ]]; then
-        PANEL_LOCATION="
-    location /${WEB_PREFIX}/ {
-        proxy_pass         http://127.0.0.1:5000/${WEB_PREFIX}/;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Real-IP \$remote_addr;
-    }
-    location / { return 404; }"
-    else
-        PANEL_LOCATION="
-    location / {
-        proxy_pass         http://127.0.0.1:5000/;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Real-IP \$remote_addr;
-    }"
-    fi
-
     cat > /etc/nginx/sites-available/singbox-manager << NGINXEOF
 server {
     listen 80 default_server;
@@ -463,11 +448,11 @@ server {
 ${PANEL_LOCATION}
 }
 NGINXEOF
-    ln -sf /etc/nginx/sites-available/singbox-manager \
-           /etc/nginx/sites-enabled/singbox-manager
 fi
 
-nginx -t -q && systemctl restart nginx
+ln -sf /etc/nginx/sites-available/singbox-manager \
+       /etc/nginx/sites-enabled/singbox-manager
+nginx -t && systemctl restart nginx
 success "Nginx настроен"
 
 # =============================================================================
@@ -491,33 +476,25 @@ echo "╚═══════════════════════�
 echo -e "${NC}"
 
 if [[ -n "$DOMAIN" ]]; then
-    if [[ -n "$WEB_PREFIX" ]]; then
-        PANEL_URL="https://${DOMAIN}/${WEB_PREFIX}/"
-    else
-        PANEL_URL="https://${DOMAIN}/"
-    fi
+    PANEL_URL="https://${DOMAIN}/${WEB_PREFIX:+${WEB_PREFIX}/}"
 else
     SERVER_IP=$(hostname -I | awk '{print $1}')
-    if [[ -n "$WEB_PREFIX" ]]; then
-        PANEL_URL="http://${SERVER_IP}/${WEB_PREFIX}/"
-    else
-        PANEL_URL="http://${SERVER_IP}/"
-    fi
+    PANEL_URL="http://${SERVER_IP}/${WEB_PREFIX:+${WEB_PREFIX}/}"
 fi
 
 echo -e "${BOLD}Сохраните эти данные:${NC}"
-echo "┌─────────────────────────────────────────────────────────"
-echo "│  OBFS пароль:       ${OBFS_PASSWORD}"
-echo "│  WEB_PREFIX:        ${WEB_PREFIX:-'(без префикса)'}"
-echo "│  Веб-панель:        ${PANEL_URL}"
-echo "│  Логин панели:      admin"
-echo "│  Пароль панели:     ${WEB_ADMIN_PASS}"
-echo "└─────────────────────────────────────────────────────────"
+echo "┌──────────────────────────────────────────────────────"
+echo "│  OBFS пароль:    ${OBFS_PASSWORD}"
+echo "│  WEB_PREFIX:     ${WEB_PREFIX:-'(без префикса)'}"
+echo "│  Веб-панель:     ${PANEL_URL}"
+echo "│  Логин панели:   admin"
+echo "│  Пароль панели:  ${WEB_ADMIN_PASS}"
+echo "└──────────────────────────────────────────────────────"
 echo ""
 echo -e "${YELLOW}${BOLD}Обязательно заполните .env:${NC}"
 echo "  nano ${APP_DIR}/.env"
-echo "  Заполните: BOT_TOKEN, ADMIN_IDS"
-echo "  OBFS_PASSWORD, WEB_PREFIX и WEB_ADMIN_PASS уже заполнены."
+echo "  → Заполните: BOT_TOKEN, ADMIN_IDS"
+echo "  → OBFS_PASSWORD, WEB_PREFIX, WEB_ADMIN_PASS — уже заполнены"
 echo ""
 echo -e "${BOLD}Полезные команды:${NC}"
 echo "  systemctl status sing-box singbox-bot singbox-web"
@@ -525,6 +502,6 @@ echo "  journalctl -u singbox-bot -f"
 echo "  journalctl -u singbox-web -f"
 echo "  journalctl -u sing-box -f"
 echo ""
-echo "  # Если в config.json уже были пользователи — импортировать:"
+echo "  # Если в sing-box уже были пользователи — импортировать в БД:"
 echo "  ${APP_DIR}/venv/bin/python ${APP_DIR}/migrate_existing.py"
 echo ""
