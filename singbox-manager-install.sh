@@ -316,6 +316,7 @@ chmod 755 "$APP_DIR"
 
 # sudoers
 cat > /etc/sudoers.d/singboxmgr << SUDOEOF
+Defaults:${SERVICE_USER} !use_pty
 ${SERVICE_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart sing-box, /usr/bin/systemctl is-active sing-box, /usr/bin/systemctl show sing-box
 SUDOEOF
 chmod 440 /etc/sudoers.d/singboxmgr
