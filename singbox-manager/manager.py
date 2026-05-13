@@ -7,7 +7,6 @@ import secrets
 import subprocess
 import base64
 from datetime import datetime, timedelta
-
 import db
 from config import (
     SINGBOX_CONFIG_PATH, SINGBOX_SERVICE,
@@ -20,7 +19,8 @@ from config import (
 # ── Утилиты ────────────────────────────────────────────────────────────────
 
 def gen_password() -> str:
-    return base64.b64encode(secrets.token_bytes(16)).decode()
+    # URL-safe Base64 без + / = — корректно парсится всеми клиентами
+    return secrets.token_urlsafe(16)
 
 def gen_sub_token() -> str:
     return secrets.token_urlsafe(24)
@@ -32,9 +32,12 @@ def gb_to_bytes(gb: float) -> int:
     return int(gb * (1024 ** 3))
 
 def fmt_bytes(b: int) -> str:
-    if b < 1024:       return f"{b} B"
-    if b < 1024**2:    return f"{b/1024:.1f} KB"
-    if b < 1024**3:    return f"{b/1024**2:.1f} MB"
+    if b < 1024:
+        return f"{b} B"
+    if b < 1024**2:
+        return f"{b/1024:.1f} KB"
+    if b < 1024**3:
+        return f"{b/1024**2:.1f} MB"
     return f"{b/1024**3:.2f} GB"
 
 
@@ -51,15 +54,25 @@ def write_config(cfg: dict):
     os.replace(tmp, SINGBOX_CONFIG_PATH)
 
 def restart_singbox() -> tuple[bool, str]:
-    """Перезапускает sing-box через systemctl restart."""
+    """Перезапускает sing-box и ждёт пока он реально поднимется."""
+    import time
     try:
         r = subprocess.run(
-            ["systemctl", "restart", SINGBOX_SERVICE],
+            ["sudo", "systemctl", "restart", SINGBOX_SERVICE],
             capture_output=True, text=True, timeout=25
         )
-        if r.returncode == 0:
-            return True, "restarted"
-        return False, r.stderr.strip()
+        if r.returncode != 0:
+            return False, r.stderr.strip()
+        # Ждём пока сервис реально перейдёт в active
+        for _ in range(10):
+            time.sleep(0.5)
+            check = subprocess.run(
+                ["sudo", "systemctl", "is-active", SINGBOX_SERVICE],
+                capture_output=True, text=True, timeout=5
+            )
+            if check.stdout.strip() == "active":
+                return True, "restarted"
+        return False, "timeout waiting for active state"
     except subprocess.TimeoutExpired:
         return False, "timeout"
     except Exception as e:
@@ -67,6 +80,11 @@ def restart_singbox() -> tuple[bool, str]:
 
 # Оставляем псевдоним для обратной совместимости
 reload_singbox = restart_singbox
+
+def sync_and_restart() -> tuple[bool, str]:
+    """Атомарно: синхронизирует конфиг из БД и перезапускает sing-box."""
+    sync_config_from_db()
+    return restart_singbox()
 
 def get_inbound(cfg: dict) -> dict:
     for inb in cfg.get("inbounds", []):
@@ -85,7 +103,7 @@ def ensure_clash_api(cfg: dict):
             "external_controller": host_port,
             "secret": ""
         }
-        return True   # конфиг изменён
+        return True  # конфиг изменён
     return False
 
 def sync_config_from_db():
@@ -134,20 +152,21 @@ def is_over_limit(user: dict) -> bool:
 
 def add_user(name: str, email: str = None, server_host: str = None,
              traffic_limit_gb: float = None, expire_days: int = None,
-             notes: str = None) -> dict:
+             notes: str = None, sni: str = None, allow_insecure: bool = False) -> dict:
     if db.get_user_by_name(name):
         raise ValueError(f"Пользователь «{name}» уже существует")
-
-    password      = gen_password()
-    sub_token     = gen_sub_token()
+    
+    password = gen_password()
+    sub_token = gen_sub_token()
+    
     traffic_limit_gb = traffic_limit_gb if traffic_limit_gb is not None else DEFAULT_TRAFFIC_LIMIT_GB
-    expire_days      = expire_days if expire_days is not None else DEFAULT_EXPIRE_DAYS
-    expire_at     = None
+    expire_days = expire_days if expire_days is not None else DEFAULT_EXPIRE_DAYS
+    
+    expire_at = None
     if expire_days:
         expire_at = (datetime.utcnow() + timedelta(days=expire_days)).isoformat()
 
-    # server_host хранится в notes-extended или отдельном поле;
-    # пока храним в поле notes если задан отдельно
+    # server_host хранится в notes-extended или отдельном поле
     full_notes = notes or ""
     if server_host and server_host != SERVER_HOST:
         full_notes = f"[host:{server_host}] {full_notes}".strip()
@@ -157,35 +176,32 @@ def add_user(name: str, email: str = None, server_host: str = None,
         traffic_limit_gb=traffic_limit_gb, expire_at=expire_at,
         sub_token=sub_token,
         notes=full_notes or None,
+        sni=sni, allow_insecure=allow_insecure,
     )
     # Сохраняем server_host для URI
     user["_server_host"] = server_host or SERVER_HOST
-    sync_config_from_db()
-    restart_singbox()
+    sync_and_restart()
     return user
 
 def suspend_user(name: str) -> bool:
     if not db.get_user_by_name(name):
         raise ValueError(f"Пользователь «{name}» не найден")
     db.update_user_status(name, "suspended")
-    sync_config_from_db()
-    ok, msg = restart_singbox()
+    ok, _ = sync_and_restart()
     return ok
 
 def activate_user(name: str) -> bool:
     if not db.get_user_by_name(name):
         raise ValueError(f"Пользователь «{name}» не найден")
     db.update_user_status(name, "active")
-    sync_config_from_db()
-    ok, _ = restart_singbox()
+    ok, _ = sync_and_restart()
     return ok
 
 def delete_user(name: str) -> bool:
     if not db.get_user_by_name(name):
         raise ValueError(f"Пользователь «{name}» не найден")
     db.update_user_status(name, "deleted")
-    sync_config_from_db()
-    ok, _ = restart_singbox()
+    ok, _ = sync_and_restart()
     return ok
 
 def set_traffic_limit(name: str, limit_gb: float):
@@ -201,6 +217,12 @@ def set_expire(name: str, days: int):
 def set_email(name: str, email: str):
     db.update_user_field(name, "email", email)
 
+def set_sni(name: str, sni: str):
+    db.update_user_field(name, "sni", sni if sni else None)
+
+def set_allow_insecure(name: str, allow: bool):
+    db.update_user_field(name, "allow_insecure", 1 if allow else 0)
+
 def reset_traffic(name: str):
     db.reset_traffic(name)
 
@@ -208,11 +230,11 @@ def list_users(online_set: set = None) -> list[dict]:
     users = db.get_all_users()
     result = []
     for u in users:
-        u["expired"]            = is_expired(u)
-        u["over_limit"]         = is_over_limit(u)
+        u["expired"] = is_expired(u)
+        u["over_limit"] = is_over_limit(u)
         u["traffic_used_total"] = u["traffic_used_rx"] + u["traffic_used_tx"]
-        u["traffic_used_gb"]    = bytes_to_gb(u["traffic_used_total"])
-        u["online"]             = u["name"] in online_set if online_set is not None else False
+        u["traffic_used_gb"] = bytes_to_gb(u["traffic_used_total"])
+        u["online"] = u["name"] in online_set if online_set is not None else False
         result.append(u)
     return result
 
@@ -229,10 +251,29 @@ def _get_user_host(user: dict) -> str:
 
 def build_hy2_uri(user: dict, host: str = None) -> str:
     h = host or _get_user_host(user)
-    obfs = f"&obfs=salamander&obfs-password={OBFS_PASSWORD}" if OBFS_PASSWORD else ""
+    
+    # Параметры URI
+    params = []
+    
+    # SNI: добавляем только если задан и отличается от хоста
+    sni = user.get("sni")
+    if sni and sni != h:
+        params.append(f"sni={sni}")
+    
+    # allowInsecure: insecure=1 если разрешено, иначе 0
+    insecure = "1" if user.get("allow_insecure") else "0"
+    params.append(f"insecure={insecure}")
+    
+    # OBFS
+    if OBFS_PASSWORD:
+        params.append("obfs=salamander")
+        params.append(f"obfs-password={OBFS_PASSWORD}")
+    
+    params_str = "&".join(params)
+    
     return (
         f"hysteria2://{user['password']}@{h}:{SERVER_PORT}"
-        f"?insecure=0{obfs}"
+        f"?{params_str}"
         f"#{user['name']}"
     )
 
@@ -258,18 +299,17 @@ def check_expired_users():
             db.update_user_status(u["name"], "suspended")
             changed = True
     if changed:
-        sync_config_from_db()
-        restart_singbox()
+        sync_and_restart()
 
 def get_singbox_status() -> dict:
     try:
         r = subprocess.run(
-            ["systemctl", "is-active", SINGBOX_SERVICE],
+            ["sudo", "systemctl", "is-active", SINGBOX_SERVICE],
             capture_output=True, text=True, timeout=5
         )
         active = r.stdout.strip() == "active"
         r2 = subprocess.run(
-            ["systemctl", "show", SINGBOX_SERVICE,
+            ["sudo", "systemctl", "show", SINGBOX_SERVICE,
              "--property=ActiveEnterTimestamp,MainPID"],
             capture_output=True, text=True, timeout=5
         )
@@ -279,8 +319,8 @@ def get_singbox_status() -> dict:
         return {
             "active": active,
             "status": r.stdout.strip(),
-            "pid":    info.get("MainPID", "?"),
-            "since":  info.get("ActiveEnterTimestamp", "?"),
+            "pid": info.get("MainPID", "?"),
+            "since": info.get("ActiveEnterTimestamp", "?"),
         }
     except Exception as e:
         return {"active": False, "status": "error", "pid": "?", "since": str(e)}
