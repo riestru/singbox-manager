@@ -48,6 +48,15 @@
   .dot-red { background: var(--red); }
   .dot-yellow { background: var(--yellow); }
 
+  /* Системные метрики */
+  .sys-bar-wrap { margin-top: 8px; }
+  .sys-bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 4px; }
+  .sys-bar-fill { height: 100%; border-radius: 2px; transition: width .5s; }
+  .sys-bar-fill.cpu  { background: var(--accent); }
+  .sys-bar-fill.mem  { background: var(--accent2); }
+  .sys-bar-fill.warn { background: var(--yellow); }
+  .sys-bar-fill.over { background: var(--red); }
+
   /* Search */
   .toolbar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
   .search-box { background: var(--surface); border: 1px solid var(--border);
@@ -189,6 +198,27 @@
       <div class="card-label">Всего трафика</div>
       <div class="card-value">{{ total_all }}</div>
       <div class="card-sub">↓ + ↑</div>
+    </div>
+    <div class="card" id="card-cpu">
+      <div class="card-label">CPU</div>
+      <div class="card-value" id="cpu-val">{{ sys_stats.cpu_pct }}%</div>
+      <div class="sys-bar-wrap">
+        <div class="sys-bar">
+          <div class="sys-bar-fill cpu {% if sys_stats.cpu_pct >= 90 %}over{% elif sys_stats.cpu_pct >= 70 %}warn{% else %}cpu{% endif %}"
+               id="cpu-bar" style="width:{{ sys_stats.cpu_pct }}%"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card" id="card-mem">
+      <div class="card-label">Память</div>
+      <div class="card-value" id="mem-val">{{ sys_stats.mem_used_mb }} MB</div>
+      <div class="card-sub" id="mem-sub">из {{ sys_stats.mem_total_mb }} MB · {{ sys_stats.mem_pct }}%</div>
+      <div class="sys-bar-wrap">
+        <div class="sys-bar">
+          <div class="sys-bar-fill mem {% if sys_stats.mem_pct >= 90 %}over{% elif sys_stats.mem_pct >= 70 %}warn{% else %}mem{% endif %}"
+               id="mem-bar" style="width:{{ sys_stats.mem_pct }}%"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -395,12 +425,53 @@
 
   async function resetTraffic(name) {
     if (!confirm('Сбросить трафик для ' + name + '?')) return;
-    const r = await fetch('/api/reset_traffic/' + name, {method: 'POST'});
+    const r = await fetch(BASE + '/api/reset_traffic/' + name, {method: 'POST'});
     if (r.ok) { showToast('Трафик ' + name + ' сброшен'); setTimeout(() => location.reload(), 1000); }
     else showToast('Ошибка сброса');
   }
 
-  // Auto-refresh every 60s
+  // Автообновление метрик каждые 10 секунд (без перезагрузки страницы)
+  // Базовый путь панели (учитывает WEB_PREFIX)
+  const BASE = window.location.pathname.replace(/\/[^\/]*$/, '');
+
+  async function updateSysinfo() {
+    try {
+      const r = await fetch(BASE + '/api/sysinfo');
+      if (!r.ok) return;
+      const d = await r.json();
+
+      // CPU
+      const cpuEl  = document.getElementById('cpu-val');
+      const cpuBar = document.getElementById('cpu-bar');
+      if (cpuEl)  cpuEl.textContent = d.cpu_pct + '%';
+      if (cpuBar) {
+        cpuBar.style.width = d.cpu_pct + '%';
+        cpuBar.className = 'sys-bar-fill ' + (d.cpu_pct >= 90 ? 'over' : d.cpu_pct >= 70 ? 'warn' : 'cpu');
+      }
+
+      // Память
+      const memVal = document.getElementById('mem-val');
+      const memSub = document.getElementById('mem-sub');
+      const memBar = document.getElementById('mem-bar');
+      if (memVal) memVal.textContent = d.mem_used_mb + ' MB';
+      if (memSub) memSub.textContent = 'из ' + d.mem_total_mb + ' MB · ' + d.mem_pct + '%';
+      if (memBar) {
+        memBar.style.width = d.mem_pct + '%';
+        memBar.className = 'sys-bar-fill ' + (d.mem_pct >= 90 ? 'over' : d.mem_pct >= 70 ? 'warn' : 'mem');
+      }
+
+      // Время обновления в заголовке
+      const tsEl = document.querySelector('.ts');
+      if (tsEl && d.now) tsEl.textContent = 'Обновлено: ' + d.now;
+
+    } catch(e) {}
+  }
+
+  // Запускаем сразу и затем каждые 10 секунд
+  updateSysinfo();
+  setInterval(updateSysinfo, 10000);
+
+  // Полная перезагрузка страницы (пользователи, трафик) каждые 60 секунд
   setTimeout(() => location.reload(), 60000);
 </script>
 </body>
