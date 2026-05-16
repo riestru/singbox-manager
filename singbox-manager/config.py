@@ -4,6 +4,10 @@ import os
 BOT_TOKEN  = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_IDS  = list(map(int, os.getenv("ADMIN_IDS", "123456789").split(",")))
 
+# Прокси для Telegram бота (если Telegram заблокирован на сервере)
+# Форматы: socks5://user:pass@host:port  или  http://host:port  или  пусто
+HTTPS_PROXY = os.getenv("HTTPS_PROXY", "")
+
 # === Sing-box ===
 SINGBOX_CONFIG_PATH = "/etc/sing-box/config.json"
 SINGBOX_SERVICE     = "sing-box"
