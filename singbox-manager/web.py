@@ -175,6 +175,32 @@ def api_users():
     })
 
 
+@panel.route("/api/user/suspend/<name>", methods=["POST"])
+@auth.login_required
+def api_suspend_user(name):
+    u = db.get_user_by_name(name)
+    if not u or u["status"] == "deleted":
+        return jsonify({"error": "not found"}), 404
+    try:
+        manager.suspend_user(name)
+        return jsonify({"ok": True, "name": name, "status": "suspended"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@panel.route("/api/user/activate/<name>", methods=["POST"])
+@auth.login_required
+def api_activate_user(name):
+    u = db.get_user_by_name(name)
+    if not u or u["status"] == "deleted":
+        return jsonify({"error": "not found"}), 404
+    try:
+        manager.activate_user(name)
+        return jsonify({"ok": True, "name": name, "status": "active"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @panel.route("/api/reset_traffic/<name>", methods=["POST"])
 @auth.login_required
 def api_reset_traffic(name):
