@@ -32,9 +32,6 @@ tty_read() {
 APP_DIR="/opt/singbox-manager"
 SERVICE_USER="singboxmgr"
 SINGBOX_VERSION="1.13.2"
-# Для автоопределения последней версии sing-box раскомментируйте:
-# SINGBOX_VERSION=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest \
-#   | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/')
 SINGBOX_BIN="/usr/local/bin/sing-box"
 SINGBOX_CONFIG="/etc/sing-box/config.json"
 CERTS_DIR="/etc/ssl/singbox-manager"
@@ -49,6 +46,147 @@ echo "║        Sing-box Manager — Установщик            ║"
 echo "║        Ubuntu 24.04 / sing-box ${SINGBOX_VERSION}          ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo -e "${NC}"
+
+# =============================================================================
+# ШАГ 0: Pre-flight проверки
+# =============================================================================
+step "Pre-flight проверки"
+
+PREFLIGHT_OK=true
+
+# ── Проверка занятости портов ─────────────────────────────────────────────
+
+check_port_tcp() {
+    local port="$1"
+    local owner
+    owner=$(ss -tlnp "sport = :${port}" 2>/dev/null | awk 'NR>1 {print $NF}' | grep -oP 'users:\(\("\K[^"]+' | head -1 || true)
+    if ss -tlnp "sport = :${port}" 2>/dev/null | grep -q ":${port}"; then
+        warn "TCP порт ${port} занят (процесс: ${owner:-неизвестен})"
+        echo false
+    else
+        echo true
+    fi
+}
+
+check_port_udp() {
+    local port="$1"
+    local owner
+    owner=$(ss -ulnp "sport = :${port}" 2>/dev/null | awk 'NR>1 {print $NF}' | grep -oP 'users:\(\("\K[^"]+' | head -1 || true)
+    if ss -ulnp "sport = :${port}" 2>/dev/null | grep -q ":${port}"; then
+        warn "UDP порт ${port} занят (процесс: ${owner:-неизвестен})"
+        echo false
+    else
+        echo true
+    fi
+}
+
+PORT80_FREE=$(check_port_tcp 80)
+PORT443_TCP_FREE=$(check_port_tcp 443)
+PORT443_UDP_FREE=$(check_port_udp 443)
+
+# ── Проверка nginx ────────────────────────────────────────────────────────
+
+NGINX_INSTALLED=false
+NGINX_ACTIVE=false
+NGINX_WILL_CONFLICT=false
+
+if command -v nginx &>/dev/null; then
+    NGINX_INSTALLED=true
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+        NGINX_ACTIVE=true
+        # nginx занимает порт 80/443 — это нормально для нашего сценария,
+        # мы будем его конфигурировать. Но если порт занят чем-то другим — проблема.
+        info "nginx уже установлен и запущен"
+    else
+        info "nginx установлен, но не запущен"
+    fi
+else
+    info "nginx не установлен — будет установлен"
+fi
+
+# ── Проверка конфликта портов (не nginx) ─────────────────────────────────
+# Порт 80: если занят не nginx — это проблема
+if [[ "$PORT80_FREE" == "false" ]]; then
+    PORT80_PROC=$(ss -tlnp "sport = :80" 2>/dev/null | awk 'NR>1 {print $NF}' | grep -oP 'users:\(\("\K[^"]+' | head -1 || true)
+    if [[ "$PORT80_PROC" != "nginx" ]] && [[ "$NGINX_ACTIVE" == "false" ]]; then
+        warn "TCP 80 занят процессом '${PORT80_PROC:-?}' — не nginx. Это может помешать выпуску сертификата."
+        PREFLIGHT_OK=false
+    else
+        info "TCP 80 занят nginx (штатно, будет перенастроен)"
+    fi
+fi
+
+# Порт UDP 443: должен быть свободен для sing-box (hysteria2)
+if [[ "$PORT443_UDP_FREE" == "false" ]]; then
+    PORT443U_PROC=$(ss -ulnp "sport = :443" 2>/dev/null | awk 'NR>1 {print $NF}' | grep -oP 'users:\(\("\K[^"]+' | head -1 || true)
+    # sing-box уже запущен — он будет остановлен и перезапущен, это нормально
+    if [[ "$PORT443U_PROC" == "sing-box" ]]; then
+        info "UDP 443 занят sing-box (будет перезапущен)"
+    else
+        warn "UDP 443 занят процессом '${PORT443U_PROC:-?}'. Sing-box (hysteria2) не сможет запуститься!"
+        PREFLIGHT_OK=false
+    fi
+fi
+
+# Порт TCP 443: nginx будет его слушать, если nginx активен — OK
+if [[ "$PORT443_TCP_FREE" == "false" ]]; then
+    PORT443T_PROC=$(ss -tlnp "sport = :443" 2>/dev/null | awk 'NR>1 {print $NF}' | grep -oP 'users:\(\("\K[^"]+' | head -1 || true)
+    if [[ "$PORT443T_PROC" == "nginx" ]]; then
+        info "TCP 443 занят nginx (штатно, будет перенастроен)"
+    else
+        warn "TCP 443 занят процессом '${PORT443T_PROC:-?}'. Nginx не сможет запуститься на 443!"
+        PREFLIGHT_OK=false
+    fi
+fi
+
+# ── Проверка уже существующих компонентов (повторная установка) ────────────
+
+REINSTALL=false
+
+if [[ -f "$SINGBOX_CONFIG" ]]; then
+    warn "Найден существующий config.json: ${SINGBOX_CONFIG}"
+    warn "При продолжении он будет ПЕРЕЗАПИСАН. Сохраните пользователей!"
+    REINSTALL=true
+fi
+
+if [[ -d "$APP_DIR" ]]; then
+    warn "Директория ${APP_DIR} уже существует — это повторная установка"
+    REINSTALL=true
+fi
+
+if [[ -d "$HOME/.acme.sh" ]]; then
+    # Проверяем, работоспособен ли acme.sh
+    if [[ ! -x "$HOME/.acme.sh/acme.sh" ]]; then
+        warn "acme.sh найден в ${HOME}/.acme.sh, но повреждён (нет исполняемого файла)"
+        warn "Будет выполнена принудительная переустановка acme.sh"
+        ACME_BROKEN=true
+    else
+        info "acme.sh уже установлен и работоспособен"
+        ACME_BROKEN=false
+    fi
+else
+    ACME_BROKEN=false
+fi
+
+# ── Итог pre-flight ───────────────────────────────────────────────────────
+
+echo ""
+if [[ "$PREFLIGHT_OK" == "false" ]]; then
+    echo -e "${RED}${BOLD}Обнаружены критические проблемы (см. предупреждения выше).${NC}"
+    echo -e "Рекомендуется устранить их до продолжения."
+    echo ""
+    tty_read "Продолжить несмотря на предупреждения? [yes/N]: " _force_continue
+    if [[ "${_force_continue,,}" != "yes" ]]; then
+        error "Установка прервана пользователем."
+    fi
+    warn "Продолжаем по запросу пользователя..."
+else
+    if [[ "$REINSTALL" == "true" ]]; then
+        echo -e "${YELLOW}${BOLD}Обнаружена предыдущая установка. Будет выполнена переустановка.${NC}"
+    else
+        success "Pre-flight проверки пройдены"
+    fi
+fi
 
 # =============================================================================
 # ШАГ 1: Запрос параметров
@@ -111,13 +249,23 @@ step "Системные пакеты"
 apt-get update -qq
 apt-get install -y -qq \
     python3 python3-pip python3-venv \
-    nginx curl wget unzip socat sqlite3 openssl
+    nginx curl wget unzip socat sqlite3 openssl cron
 success "Пакеты установлены"
+
+# Убеждаемся, что cron запущен (нужен для acme.sh авторенью)
+systemctl enable cron --quiet 2>/dev/null || true
+systemctl start cron 2>/dev/null || true
 
 # =============================================================================
 # ШАГ 3: Sing-box
 # =============================================================================
 step "Установка sing-box ${SINGBOX_VERSION}"
+
+# Останавливаем sing-box если запущен
+if systemctl is-active --quiet sing-box 2>/dev/null; then
+    info "Останавливаем существующий sing-box..."
+    systemctl stop sing-box
+fi
 
 SINGBOX_TGZ="sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
 SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${SINGBOX_TGZ}"
@@ -157,9 +305,12 @@ mkdir -p "$CERTS_DIR" /var/log/sing-box /var/www/html
 if [[ -n "$DOMAIN" ]]; then
     info "Получаем сертификат для ${DOMAIN} через acme.sh..."
 
-    # Временный nginx для acme challenge
-    rm -f /etc/nginx/sites-enabled/default
-    cat > /etc/nginx/sites-available/acme-temp << NGINXEOF
+    # ── Останавливаем nginx чтобы освободить порт 80 для acme challenge ──
+    # (или настраиваем временный конфиг — второй способ надёжнее)
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+        info "nginx активен — настраиваем временный конфиг для acme challenge"
+        rm -f /etc/nginx/sites-enabled/default
+        cat > /etc/nginx/sites-available/acme-temp << NGINXEOF
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -167,32 +318,84 @@ server {
     location / { return 444; }
 }
 NGINXEOF
-    ln -sf /etc/nginx/sites-available/acme-temp /etc/nginx/sites-enabled/acme-temp
-    nginx -t -q && systemctl restart nginx
-
-    # Устанавливаем acme.sh если нет
-    if [[ ! -f ~/.acme.sh/acme.sh ]]; then
-        curl -fsSL https://get.acme.sh | sh -s email="$ACME_EMAIL" --no-profile
+        # Убираем все конфиги кроме временного
+        find /etc/nginx/sites-enabled/ -type l -not -name 'acme-temp' -delete 2>/dev/null || true
+        ln -sf /etc/nginx/sites-available/acme-temp /etc/nginx/sites-enabled/acme-temp
+        nginx -t -q && systemctl reload nginx
+    else
+        # nginx не запущен — остановим его чтобы порт 80 был свободен,
+        # и запустим временный конфиг
+        systemctl stop nginx 2>/dev/null || true
+        rm -f /etc/nginx/sites-enabled/default
+        cat > /etc/nginx/sites-available/acme-temp << NGINXEOF
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    location /.well-known/acme-challenge/ { root /var/www/html; }
+    location / { return 444; }
+}
+NGINXEOF
+        ln -sf /etc/nginx/sites-available/acme-temp /etc/nginx/sites-enabled/acme-temp
+        nginx -t -q && systemctl start nginx
     fi
+
+    # ── Проверяем доступность порта 80 снаружи ───────────────────────────
+    sleep 1
+    if ! ss -tlnp "sport = :80" 2>/dev/null | grep -q ":80"; then
+        error "Порт 80 не слушается после запуска nginx. Проверьте конфигурацию."
+    fi
+    info "Порт 80 доступен — продолжаем"
+
+    # ── Установка / переустановка acme.sh ────────────────────────────────
+    _install_acme() {
+        info "Устанавливаем acme.sh (с --force)..."
+        curl -fsSL https://get.acme.sh | sh -s email="$ACME_EMAIL" --no-profile --force
+    }
+
+    if [[ "${ACME_BROKEN:-false}" == "true" ]]; then
+        # Папка битая — удаляем и ставим заново
+        warn "Удаляем повреждённую установку acme.sh..."
+        rm -rf "$HOME/.acme.sh"
+        _install_acme
+    elif [[ ! -f "$HOME/.acme.sh/acme.sh" ]]; then
+        # Просто нет — устанавливаем
+        _install_acme
+    else
+        # Проверяем работоспособность
+        if ! "$HOME/.acme.sh/acme.sh" --version &>/dev/null; then
+            warn "acme.sh установлен, но не отвечает на --version. Переустанавливаем..."
+            rm -rf "$HOME/.acme.sh"
+            _install_acme
+        else
+            info "acme.sh уже работоспособен, переустановка не нужна"
+        fi
+    fi
+
     export PATH="$HOME/.acme.sh:$PATH"
 
-    # Выпускаем сертификат (без --quiet, он не поддерживается)
-    ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot /var/www/html \
+    # Финальная проверка
+    if [[ ! -x "$HOME/.acme.sh/acme.sh" ]]; then
+        error "acme.sh так и не установился. Проверьте сеть и права доступа."
+    fi
+
+    # ── Выпуск сертификата ────────────────────────────────────────────────
+    # --force переиздаёт даже если сертификат уже есть (при повторной установке)
+    "$HOME/.acme.sh/acme.sh" --issue -d "$DOMAIN" --webroot /var/www/html --force \
       || error "Не удалось получить сертификат для ${DOMAIN}. Проверьте DNS (dig ${DOMAIN} +short) и порт 80."
 
-    ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
+    "$HOME/.acme.sh/acme.sh" --install-cert -d "$DOMAIN" \
         --cert-file      "${CERTS_DIR}/cert.pem" \
         --key-file       "${CERTS_DIR}/key.pem" \
         --fullchain-file "${CERTS_DIR}/fullchain.pem" \
         --reloadcmd      "systemctl reload nginx"
 
+    # Убираем временный конфиг acme
     rm -f /etc/nginx/sites-enabled/acme-temp /etc/nginx/sites-available/acme-temp
     success "Сертификат получен → ${CERTS_DIR}"
     CERT_PATH="${CERTS_DIR}/fullchain.pem"
     KEY_PATH="${CERTS_DIR}/key.pem"
 else
     warn "Домен не задан — генерируем самоподписанный сертификат (для теста)"
-    # Флаг -quiet не существует в openssl req, используем 2>/dev/null
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
         -keyout "${CERTS_DIR}/key.pem" \
         -out    "${CERTS_DIR}/fullchain.pem" \
@@ -262,10 +465,20 @@ success "config.json создан (OBFS: ${OBFS_PASSWORD})"
 # =============================================================================
 step "Установка singbox-manager"
 
+# Останавливаем сервисы если запущены
+for svc in singbox-bot singbox-web; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+        info "Останавливаем ${svc}..."
+        systemctl stop "$svc"
+    fi
+done
+
 # Системный пользователь
 if ! id "$SERVICE_USER" &>/dev/null; then
     useradd -r -s /bin/false "$SERVICE_USER"
     success "Пользователь ${SERVICE_USER} создан"
+else
+    info "Пользователь ${SERVICE_USER} уже существует"
 fi
 
 # Скачиваем и распаковываем
