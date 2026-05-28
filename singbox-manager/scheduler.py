@@ -1,18 +1,16 @@
 """
 scheduler.py — фоновые задачи:
-  - сбор трафика из Clash API → запись в БД
-  - проверка лимитов и истечения срока
-  - определение online-статуса
-Запускается в фоновом потоке из web.py.
+- сбор трафика из Clash API → запись в БД
+- проверка лимитов и истечения срока
+- определение online-статуса
+Запускается в фоновом потоке из web.py и bot.py.
 """
 import logging
 import time
 from threading import Thread, Lock
-
 import db
 import manager
-import clash_traffic
-import traffic_collector
+import traffic_collector  # Используем новый модуль для трафика и онлайна
 
 log = logging.getLogger(__name__)
 
@@ -27,8 +25,7 @@ _clash_available: bool = False
 def get_online_users() -> set[str]:
     with _online_lock:
         cached = set(_online_users)
-    # Если кэш пуст (поток ещё не успел обновить), пробуем прочитать из БД.
-    # Это актуально когда bot и web — разные процессы.
+    # Если кэш пуст, читаем из БД (актуально для бота, если web-процесс умер)
     if not cached:
         try:
             return db.get_online_users_db()
@@ -39,10 +36,13 @@ def get_online_users() -> set[str]:
 
 def _update_online():
     global _online_users, _clash_available
-    online = clash_traffic.get_online_users()
+    # ИСПРАВЛЕНИЕ: используем traffic_collector вместо clash_traffic
+    online = traffic_collector.get_online_users()
     _clash_available = True
+    
     with _online_lock:
         _online_users = online
+        
     # Сохраняем в БД — чтобы второй процесс (бот или веб) тоже мог читать
     try:
         db.set_online_users(online)
@@ -51,11 +51,7 @@ def _update_online():
 
 
 def _collect_traffic():
-    """Собирает дельту трафика из Clash API и записывает в БД.
-
-    Используем traffic_collector.collect_and_save(), который хранит
-    предыдущий снимок в _prev_stats и пишет только дельту — без двойного счёта.
-    """
+    """Собирает дельту трафика из Clash API и записывает в БД."""
     traffic_collector.collect_and_save()
 
 
@@ -77,23 +73,25 @@ def _check_limits():
 
 def _loop(traffic_interval: int, limits_interval: int):
     traffic_counter = 0
-    limits_counter  = 0
-
-    # Проверяем доступность Clash API при старте
-    if clash_traffic.is_available():
-        log.info("[scheduler] Clash API доступен — сбор трафика включён")
-    else:
+    limits_counter = 0
+    
+    # Первичная проверка доступности API
+    try:
+        traffic_collector.check_clash_api()
+        _clash_available = True
+        log.info("[scheduler] Clash API доступен — сбор трафика и онлайна включён")
+    except Exception:
         log.warning(
-            "[scheduler] Clash API недоступен. Трафик не будет собираться.\n"
+            "[scheduler] Clash API недоступен. Трафик и онлайн не будут обновляться.\n"
             "  Добавьте в /etc/sing-box/config.json:\n"
-            '  "experimental": {"clash_api": {"external_controller": "127.0.0.1:9090"}}\n'
+            '   "experimental": {"clash_api": {"external_controller": "127.0.0.1:9090"}}\n'
             "  и перезапустите sing-box."
         )
 
     while True:
         time.sleep(30)
         traffic_counter += 30
-        limits_counter  += 30
+        limits_counter += 30
 
         # Онлайн-статус — каждые 30 сек
         try:
