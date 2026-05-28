@@ -100,7 +100,19 @@ WEB_PREFIX=секретный_путь
 ./venv/bin/python -c "import db; db.init_db()"
 ```
 
-### 2.5 Создать systemd сервисы
+### 2.5 Создать/отредактировать /etc/sudoers.d/singboxmgr
+
+Выполнить `sudo visudo -f /etc/sudoers.d/singboxmgr`:
+
+Удалить всё содержимое и вставить строго эти строки (начинать с самого края, без пробелов/табуляции слева):
+
+```ini
+Defaults:singboxmgr !use_pty
+Defaults:singboxmgr !authenticate
+singboxmgr ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart sing-box, /usr/bin/systemctl is-active sing-box, /usr/bin/systemctl show sing-box *
+```
+
+### 2.6 Создать systemd сервисы
 
 Создайте `/etc/systemd/system/singbox-bot.service`:
 
@@ -129,7 +141,7 @@ systemctl daemon-reload
 systemctl enable --now singbox-bot singbox-web
 ```
 
-### 2.6 Импорт существующих пользователей из config.json
+### 2.7 Импорт существующих пользователей из config.json
 
 Если в sing-box уже есть пользователи:
 
@@ -169,6 +181,7 @@ singbox-manager/
 | `/start` | Главное меню |
 | `/help` | Справка |
 | `/add` | Добавить пользователя (пошагово) |
+| `/edit [имя` | Редактировать пользователя (своё меню) |
 | `/users` | Список пользователей |
 | `/info [имя]` | Детальная информация + URI |
 | `/stop [имя]` | Приостановить (с подтверждением) |
@@ -260,34 +273,90 @@ sqlite3 /opt/singbox-manager/users.db "SELECT name, status, sub_token FROM users
 ## .env — все параметры
 
 ```env
-# Telegram
+# ── Telegram бот ───────────────────────────────────────────────────────────
 BOT_TOKEN=
+# ваш Telegram ID (узнать у @userinfobot)
 ADMIN_IDS=123456789
 
-# Sing-box
-SERVER_HOST=vpn.example.com
+# Прокси для Telegram бота (если Telegram заблокирован провайдером)
+# Оставьте пустым если прокси не нужен
+# Форматы:
+#   HTTPS_PROXY=socks5://user:password@proxy_host:1080
+#   HTTPS_PROXY=http://proxy_host:3128
+HTTPS_PROXY=
+
+# ── Sing-box сервер ────────────────────────────────────────────────────────
+# Реальный адрес сервера — используется внутри системы (TLS-сертификат и т.п.)
+# При переезде: обязательно обновите на адрес нового сервера
+SERVER_HOST=your_domain_or_IP
+
+# Порт sing-box (hysteria2). По умолчанию 443.
+# При переезде: обновите если порт изменился
 SERVER_PORT=443
-OBFS_PASSWORD=
 
-# Веб-панель
-WEB_BASE_URL=https://vpn.example.com
-WEB_SECRET_KEY=
+# OBFS пароль — должен совпадать с obfs.password в /etc/sing-box/config.json
+# При переезде: если пароль изменился — обновите здесь.
+#   Новые URI клиентов будут строиться с новым паролем автоматически.
+#   Старым клиентам нужно будет обновить конфиг.
+OBFS_PASSWORD=ваш_obfs_пароль_из_config.json
+
+# ── Адреса для клиентов (при переезде особенно важны) ─────────────────────
+
+# Адрес для клиентских подключений (домен или IP в URI пользователя).
+# Используйте, если клиентский адрес отличается от SERVER_HOST
+# (например: другой домен, CDN, обратный прокси).
+# Если оставить пустым — используется SERVER_HOST.
+# При переезде: обновите на новый адрес/домен.
+#   migrate_existing.py при запуске обновит адрес у всех существующих клиентов.
+CLIENT_HOST=
+
+# SNI по умолчанию для новых пользователей.
+# Используйте, если SNI отличается от CLIENT_HOST
+# (например: реальный домен при использовании CDN).
+# Если оставить пустым — SNI не прописывается явно в URI
+# (клиент использует хост из URI как SNI — стандартное поведение).
+# При переезде: обновите если SNI изменился.
+#   migrate_existing.py при запуске обновит SNI у всех существующих клиентов.
+DEFAULT_SNI=
+
+# Разрешить небезопасные сертификаты по умолчанию (insecure=1 в URI).
+# true  — для самоподписанных сертификатов
+# false — для Let's Encrypt и других доверенных сертификатов (рекомендуется)
+# При переезде: migrate_existing.py обновит allow_insecure у всех клиентов.
+DEFAULT_INSECURE=false
+
+# ── Web-панель ─────────────────────────────────────────────────────────────
+# При переезде: обновите на адрес нового сервера
+WEB_BASE_URL=https://your_domain
+WEB_SECRET_KEY=случайная_строка_минимум_32_символа
 WEB_PORT=5000
+
+# Логин/пароль для входа в панель
 WEB_ADMIN_USER=admin
-WEB_ADMIN_PASS=
-WEB_PREFIX=           # секретный путь (пусто = панель на /)
+WEB_ADMIN_PASS=придумайте_сложный_пароль
 
-# Подписка через прокси (опционально)
-SUB_URL_PREFIX=       # пример: https://proxy.example.com/?url=
+# Секретный путь к панели (опционально, для безопасности)
+# Если задан — панель открывается по https://domain/ВАШ_ПУТЬ/
+# Если пусто — панель на https://domain/
+# Пример: WEB_PREFIX=drLw/OVGkbM=
+WEB_PREFIX=
 
-# Email (опционально)
-# Порт 465 → SSL, порт 587 → STARTTLS
+# ── Подписка ───────────────────────────────────────────────────────────────
+# Если хотите проксировать ссылку подписки через другой домен:
+# SUB_URL_PREFIX=https://proxy.example.com/?url=
+# Тогда ссылка будет: SUB_URL_PREFIX + основной_url
+# Если пусто — ссылка подписки ведёт напрямую на WEB_BASE_URL
+SUB_URL_PREFIX=
+
+# ── Email (опционально) ────────────────────────────────────────────────────
+# SMTP_FROM — строка "От кого" в письме.
+# ВАЖНО: имя отправителя ОБЯЗАТЕЛЬНО в кавычках если содержит пробелы:
+#   "Моя VPN" <user@mail.ru>   ← правильно
+#   Моя VPN <user@mail.ru>     ← неправильно, mail.ru отклонит
+# Порт 465 → SSL (mail.ru), порт 587 → STARTTLS (gmail, yandex)
 SMTP_HOST=smtp.mail.ru
 SMTP_PORT=465
-SMTP_USER=
-SMTP_PASS=
-SMTP_FROM=VPN Service <your@mail.ru>
-
-# Clash API
-CLASH_API_URL=http://127.0.0.1:9090
+SMTP_USER=ваш@mail.ru
+SMTP_PASS=пароль_приложения
+SMTP_FROM=<ваш@mail.ru>
 ```
