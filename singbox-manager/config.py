@@ -11,9 +11,28 @@ HTTPS_PROXY = os.getenv("HTTPS_PROXY", "")
 # === Sing-box ===
 SINGBOX_CONFIG_PATH = "/etc/sing-box/config.json"
 SINGBOX_SERVICE     = "sing-box"
+# Реальный адрес/хост сервера (используется внутри системы)
 SERVER_HOST         = os.getenv("SERVER_HOST", "your.server.domain")
 SERVER_PORT         = int(os.getenv("SERVER_PORT", "443"))
 OBFS_PASSWORD       = os.getenv("OBFS_PASSWORD", "")
+
+# Адрес сервера для клиентских подключений (домен или IP, который получает клиент в URI).
+# Используйте, если клиентский адрес отличается от SERVER_HOST
+# (например, CDN, обратный прокси, отдельный домен для клиентов).
+# Если не задан — используется SERVER_HOST.
+CLIENT_HOST         = os.getenv("CLIENT_HOST", SERVER_HOST)
+
+# SNI по умолчанию для новых пользователей.
+# Используйте, если SNI отличается от CLIENT_HOST
+# (например, при использовании CDN или прокси с отдельным доменом).
+# Если не задан — SNI не прописывается в URI явно
+# (клиент сам использует хост из URI как SNI).
+DEFAULT_SNI         = os.getenv("DEFAULT_SNI", "")
+
+# Разрешить небезопасные сертификаты по умолчанию для новых пользователей.
+# true  — insecure=1 в URI (для самоподписанных сертификатов)
+# false — insecure=0 в URI (рекомендуется для продакшена с Let's Encrypt)
+DEFAULT_INSECURE    = os.getenv("DEFAULT_INSECURE", "false").lower() == "true"
 
 # Clash API — включается добавлением секции experimental в config.json
 CLASH_API_URL = os.getenv("CLASH_API_URL", "http://127.0.0.1:9090")
