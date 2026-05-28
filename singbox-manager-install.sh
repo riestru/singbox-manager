@@ -229,11 +229,42 @@ else
     info "Используется: ${WEB_PREFIX}"
 fi
 
-# Генерация паролей
-OBFS_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9+/' | head -c 22)
-WEB_SECRET_KEY=$(openssl rand -hex 24)
-WEB_ADMIN_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)
+# ── Генерация паролей с возможностью переопределения ──────────────────────
 
+# WEB_SECRET_KEY (без изменения, не требует ввода)
+WEB_SECRET_KEY=$(openssl rand -hex 24)
+
+# ── OBFS пароль ────────────────────────────────────────────────────────
+AUTO_OBFS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9+/' | head -c 22)
+echo -e "\n${BOLD}OBFS пароль${NC} (для hysteria2)"
+echo -e "Сгенерированный: ${CYAN}${AUTO_OBFS}${NC}"
+echo "Нажмите Enter чтобы использовать его, или введите свой:"
+tty_read "OBFS пароль: " CUSTOM_OBFS
+
+if [[ -z "$CUSTOM_OBFS" ]]; then
+    OBFS_PASSWORD="$AUTO_OBFS"
+    info "Используется сгенерированный OBFS пароль"
+else
+    OBFS_PASSWORD="$CUSTOM_OBFS"
+    info "Используется пользовательский OBFS пароль"
+fi
+
+# ── WEB_ADMIN_PASS ─────────────────────────────────────────────────────
+AUTO_ADMIN=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)
+echo -e "\n${BOLD}Пароль администратора веб-панели${NC}"
+echo -e "Сгенерированный: ${CYAN}${AUTO_ADMIN}${NC}"
+echo "Нажмите Enter чтобы использовать его, или введите свой:"
+tty_read "WEB_ADMIN_PASS: " CUSTOM_ADMIN
+
+if [[ -z "$CUSTOM_ADMIN" ]]; then
+    WEB_ADMIN_PASS="$AUTO_ADMIN"
+    info "Используется сгенерированный пароль администратора"
+else
+    WEB_ADMIN_PASS="$CUSTOM_ADMIN"
+    info "Используется пользовательский пароль администратора"
+fi
+
+# Итоговое отображение параметров
 echo -e "\n${BOLD}Параметры установки:${NC}"
 echo "  Домен:          ${DOMAIN:-'нет (самоподписанный сертификат)'}"
 echo "  OBFS пароль:    ${OBFS_PASSWORD}"
