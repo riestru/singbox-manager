@@ -155,31 +155,28 @@ def add_user(name: str, email: str = None, server_host: str = None,
              notes: str = None, sni: str = None, allow_insecure: bool = False) -> dict:
     if db.get_user_by_name(name):
         raise ValueError(f"Пользователь «{name}» уже существует")
-    
+
     password = gen_password()
     sub_token = gen_sub_token()
-    
+
     traffic_limit_gb = traffic_limit_gb if traffic_limit_gb is not None else DEFAULT_TRAFFIC_LIMIT_GB
     expire_days = expire_days if expire_days is not None else DEFAULT_EXPIRE_DAYS
-    
+
     expire_at = None
     if expire_days:
         expire_at = (datetime.utcnow() + timedelta(days=expire_days)).isoformat()
 
-    # server_host хранится в notes-extended или отдельном поле
-    full_notes = notes or ""
-    if server_host and server_host != SERVER_HOST:
-        full_notes = f"[host:{server_host}] {full_notes}".strip()
+    # Нормализуем server_host: None означает «использовать SERVER_HOST по умолчанию»
+    effective_host = server_host if (server_host and server_host != SERVER_HOST) else None
 
     user = db.add_user(
         name=name, password=password, email=email,
         traffic_limit_gb=traffic_limit_gb, expire_at=expire_at,
         sub_token=sub_token,
-        notes=full_notes or None,
+        notes=notes or None,
         sni=sni, allow_insecure=allow_insecure,
+        server_host=effective_host,
     )
-    # Сохраняем server_host для URI
-    user["_server_host"] = server_host or SERVER_HOST
     sync_and_restart()
     return user
 
@@ -223,8 +220,32 @@ def set_sni(name: str, sni: str):
 def set_allow_insecure(name: str, allow: bool):
     db.update_user_field(name, "allow_insecure", 1 if allow else 0)
 
+def set_server_host(name: str, host: str):
+    """Устанавливает адрес сервера для клиентских подключений (None = дефолт)."""
+    effective = host if (host and host != SERVER_HOST) else None
+    db.update_user_field(name, "server_host", effective)
+
 def reset_traffic(name: str):
     db.reset_traffic(name)
+
+def reset_password(name: str) -> str:
+    """Генерирует новый пароль, сохраняет в БД и перезапускает sing-box.
+    Возвращает новый пароль."""
+    if not db.get_user_by_name(name):
+        raise ValueError(f"Пользователь «{name}» не найден")
+    new_password = gen_password()
+    db.update_user_field(name, "password", new_password)
+    sync_and_restart()
+    return new_password
+
+def revoke_sub_token(name: str) -> str:
+    """Генерирует новый sub_token — старая ссылка подписки перестаёт работать.
+    Возвращает новый токен."""
+    if not db.get_user_by_name(name):
+        raise ValueError(f"Пользователь «{name}» не найден")
+    new_token = gen_sub_token()
+    db.update_user_field(name, "sub_token", new_token)
+    return new_token
 
 def list_users(online_set: set = None) -> list[dict]:
     users = db.get_all_users()
@@ -242,7 +263,14 @@ def list_users(online_set: set = None) -> list[dict]:
 # ── URI и ссылки ──────────────────────────────────────────────────────────
 
 def _get_user_host(user: dict) -> str:
-    """Извлекает host из заметки [host:...] или берёт дефолт."""
+    """
+    Возвращает адрес сервера для клиентского подключения.
+    Приоритет: поле server_host в БД → старый формат [host:...] в notes → SERVER_HOST.
+    """
+    # Новый способ: отдельное поле
+    if user.get("server_host"):
+        return user["server_host"]
+    # Обратная совместимость: старый костыль [host:...] в notes
     notes = user.get("notes") or ""
     if notes.startswith("[host:"):
         end = notes.index("]")
@@ -251,26 +279,26 @@ def _get_user_host(user: dict) -> str:
 
 def build_hy2_uri(user: dict, host: str = None) -> str:
     h = host or _get_user_host(user)
-    
+
     # Параметры URI
     params = []
-    
+
     # SNI: добавляем только если задан и отличается от хоста
     sni = user.get("sni")
     if sni and sni != h:
         params.append(f"sni={sni}")
-    
+
     # allowInsecure: insecure=1 если разрешено, иначе 0
     insecure = "1" if user.get("allow_insecure") else "0"
     params.append(f"insecure={insecure}")
-    
+
     # OBFS
     if OBFS_PASSWORD:
         params.append("obfs=salamander")
         params.append(f"obfs-password={OBFS_PASSWORD}")
-    
+
     params_str = "&".join(params)
-    
+
     return (
         f"hysteria2://{user['password']}@{h}:{SERVER_PORT}"
         f"?{params_str}"
