@@ -4,7 +4,7 @@ log_parser.py — парсинг лога sing-box для определения
   2. Текущего IP пользователя (для сопоставления с Clash API трафиком)
 
 Формат строк лога sing-box:
-  +0500 2026-05-05 02:29:25 INFO [674989939 0ms] inbound/hysteria2[hysteria-in]: [Adelya] inbound connection to ads.mozilla.org:443
+  +0500 2026-05-05 02:29:25 INFO [674989939 0ms] inbound/hysteria2[hysteria-in]: [TestUser] inbound connection to ads.mozilla.org:443
   +0500 2026-05-05 02:29:38 INFO [4264346439 0ms] inbound/hysteria2[hysteria-in]: inbound connection from 185.69.185.1:61623
 """
 import re
